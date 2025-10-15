@@ -1,34 +1,60 @@
 import os
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
-
+from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, db, messaging
-
+load_dotenv()
 try:                                                                 
     from model import Sensor_data
 except Exception:
     Sensor_data = None  # used only for typing if available
 
+import json
+
 # Read configuration from env or use defaults
 SERVICE_ACCOUNT_PATH = os.environ.get(
     "GOOGLE_APPLICATION_CREDENTIALS",
-    os.path.join(os.getcwd(), "firebase_service_account.json"),
+    os.path.join(os.getcwd(), "GOOGLE_APPLICATION_CREDENTIALS"),
 )
-DATABASE_URL = os.environ.get(
-    "FIREBASE_DATABASE_URL",
-    "https://ecowatch-d8af5-default-rtdb.firebaseio.com",
-)
+
+# Get DATABASE_URL from environment
+DATABASE_URL = os.environ.get("FIREBASE_DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError(
+        "FIREBASE_DATABASE_URL environment variable is required. "
+        "Please set it in your .env file or environment variables. "
+        "It should look like: https://your-project-id-default-rtdb.firebaseio.com/"
+    )
 
 if not os.path.exists(SERVICE_ACCOUNT_PATH):
     raise RuntimeError(f"Firebase service account file not found: {SERVICE_ACCOUNT_PATH}")
 
-# Initialize firebase_admin only once
+# Validate service account JSON
+try:
+    with open(SERVICE_ACCOUNT_PATH, 'r') as f:
+        json.load(f)  # Just test if it's valid JSON
+except Exception as e:
+    raise RuntimeError(f"Invalid service account JSON: {e}")
+
+# Initialize firebase_admin only once with better error handling
 try:
     firebase_admin.get_app()
+    print(" Firebase already initialized")
 except ValueError:
-    cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
-    firebase_admin.initialize_app(cred, {"databaseURL": DATABASE_URL})
+    try:
+        cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
+        firebase_admin.initialize_app(cred, {"databaseURL": DATABASE_URL})
+        print("Firebase initialized successfully")
+        
+        # Quick test connection
+        ref = db.reference("/")
+        test = ref.get()
+        print("Database connection test passed")
+        
+    except Exception as e:
+        print(f" Firebase initialization failed: {e}")
+        raise
 
 
 def _parse_timestamp(ts: Any) -> datetime:

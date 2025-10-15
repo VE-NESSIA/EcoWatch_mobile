@@ -69,11 +69,11 @@ async def root():
         "status": "Check console for loaded routes"
     }
 
-@app.get("/debug-test")
+@app.get("/test")
 async def test_endpoint():
     return {"message": "Test endpoint works!"}
 
-@app.get("/debug-health")
+@app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "EcoWatch API"}
 

@@ -1,85 +1,122 @@
+# main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from firebase_admin import db
+import os
+
+# Get port from environment (Railway requirement)
+PORT = int(os.getenv("PORT", 8000))
 
 app = FastAPI(
     title="EcoWatch API",
-    description="Sensor Monitoring System",
-    version="1.0.0"
+    description="Sensor Monitoring System with ML-Powered Illegal Mining Detection",
+    version="2.0.0"
 )
 
-# Add CORS
+# ✅ SIMPLIFIED CORS for Mobile App
+# Mobile apps don't have CORS restrictions (only web browsers do)
+# We use "*" for simplicity since mobile clients can connect from anywhere
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allow all origins (perfect for mobile apps)
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
-print("DEBUG: Starting router import...")
+print("🚀 DEBUG: Starting router import...")
 
-# Test each router individually
-try:
-    from routers.AlertScreen import router as alert_router
-    app.include_router(alert_router)
-    print("SUCCESS: AlertScreen router loaded")
-    
-    # Test if routes exist
-    for route in alert_router.routes:
-        print(f"   Route: {list(route.methods)} {route.path}")
-except Exception as e:
-    print(f" FAILED: AlertScreen - {e}")
+# Load all routers
+routers_config = [
+    ("routers.AlertScreen", "router", "AlertScreen"),
+    ("routers.HomeScreen", "router", "HomeScreen"),
+    ("routers.InfoScreen", "router", "InfoScreen"),
+    ("routers.SensorProfile", "router", "SensorProfile"),
+    ("routers.RealtimeStream", "router", "RealtimeStream"),
+    ("routers.MLPrediction", "router", "MLPrediction"),
+]
 
-try:
-    from routers.HomeScreen import router as home_router
-    app.include_router(home_router)
-    print("SUCCESS: HomeScreen router loaded")
-    
-    for route in home_router.routes:
-        print(f"   Route: {list(route.methods)} {route.path}")
-except Exception as e:
-    print(f" FAILED: HomeScreen - {e}")
+for module_path, router_name, display_name in routers_config:
+    try:
+        module = __import__(module_path, fromlist=[router_name])
+        router = getattr(module, router_name)
+        app.include_router(router)
+        print(f"✅ SUCCESS: {display_name} router loaded")
+        
+        for route in router.routes:
+            methods = list(route.methods) if hasattr(route, 'methods') else ['WS']
+            print(f"   Route: {methods} {route.path}")
+    except Exception as e:
+        print(f"❌ FAILED: {display_name} - {e}")
+        import traceback
+        traceback.print_exc()
 
-try:
-    from routers.InfoScreen import router as info_router
-    app.include_router(info_router)
-    print("SUCCESS: InfoScreen router loaded")
-    
-    for route in info_router.routes:
-        print(f"    Route: {list(route.methods)} {route.path}")
-except Exception as e:
-    print(f" FAILED: InfoScreen - {e}")
-
-try:
-    from routers.SensorProfile import router as sensor_router
-    app.include_router(sensor_router)
-    print("SUCCESS: SensorProfile router loaded")
-    
-    for route in sensor_router.routes:
-        print(f"  Route: {list(route.methods)} {route.path}")
-except Exception as e:
-    print(f"FAILED: SensorProfile - {e}")
-
-# Add a simple test endpoint that will definitely work
-@app.get("/")
+# Health check endpoints
+@app.get("/", tags=["Core"])
 async def root():
+    """API root endpoint"""
     return {
-        "message": "EcoWatch API is running!",
-        "status": "Check console for loaded routes"
+        "message": "EcoWatch API with ML Detection is running!",
+        "version": "2.0.0",
+        "features": [
+            "Sensor Monitoring",
+            "Real-time Streaming (SSE/WebSocket)",
+            "ML-Powered Mining Detection",
+            "Push Notifications",
+            "Historical Analytics"
+        ],
+        "documentation": "/docs",
+        "status": "operational"
     }
 
-@app.get("/test")
+@app.get("/test", tags=["Core"])
 async def test_endpoint():
-    return {"message": "Test endpoint works!"}
+    """Simple test endpoint"""
+    return {
+        "status": "success",
+        "message": "Test endpoint works!",
+        "timestamp": "2025-10-18T00:00:00Z"
+    }
 
-@app.get("/health")
+@app.get("/health", tags=["Core"])
 async def health_check():
-    return {"status": "healthy", "service": "EcoWatch API"}
+    """
+    Health check endpoint
+    
+    Verifies:
+    - API is running
+    - ML model is loaded
+    - Firebase connection (basic check)
+    """
+    health_status = {
+        "status": "healthy",
+        "service": "EcoWatch API",
+        "version": "2.0.0"
+    }
+    
+    # Check ML model
+    try:
+        from ml_models.predictor import get_predictor
+        predictor = get_predictor()
+        health_status["ml_model"] = "loaded" if predictor.model is not None else "not_loaded"
+    except Exception as e:
+        health_status["ml_model"] = f"error: {str(e)}"
+    
+    # Check Firebase connection
+    try:
+        from firebase_admin import db
+        ref = db.reference("/")
+        ref.get()  # Simple connection test
+        health_status["firebase"] = "connected"
+    except Exception as e:
+        health_status["firebase"] = f"error: {str(e)}"
+    
+    return health_status
 
-if __name__ == "_main_":
+if __name__ == "__main__":
     import uvicorn
-    print("\n Starting server...")
-    print("Docs will be at: http://127.0.0.1:8000/docs")
-    print("Root endpoint: http://127.0.0.1:8000/")
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    print(f"\n🚀 Starting EcoWatch API server on port {PORT}...")
+    print(f"📚 API Docs: http://127.0.0.1:{PORT}/docs")
+    print(f"🏠 Root: http://127.0.0.1:{PORT}/")
+    print(f"❤️  Health: http://127.0.0.1:{PORT}/health")
+    uvicorn.run(app, host="0.0.0.0", port=PORT, reload=True)

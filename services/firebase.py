@@ -1,61 +1,117 @@
+# services/firebase.py
 import os
+import json
+import base64
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, db, messaging
+
 load_dotenv()
-try:                                                                 
+
+try:
     from model import Sensor_data
 except Exception:
     Sensor_data = None  # used only for typing if available
 
-import json
+# ============================================================================
+# FIREBASE INITIALIZATION - Supports both Local and Railway Deployment
+# ============================================================================
 
-# Read configuration from env or use defaults
-SERVICE_ACCOUNT_PATH = os.environ.get(
-    "GOOGLE_APPLICATION_CREDENTIALS",
-    os.path.join(os.getcwd(), "GOOGLE_APPLICATION_CREDENTIALS"),
-)
-
-# Get DATABASE_URL from environment
-DATABASE_URL = os.environ.get("FIREBASE_DATABASE_URL")
-if not DATABASE_URL:
-    raise ValueError(
-        "FIREBASE_DATABASE_URL environment variable is required. "
-        "Please set it in your .env file or environment variables. "
-        "It should look like: https://your-project-id-default-rtdb.firebaseio.com/"
-    )
-
-if not os.path.exists(SERVICE_ACCOUNT_PATH):
-    raise RuntimeError(f"Firebase service account file not found: {SERVICE_ACCOUNT_PATH}")
-
-# Validate service account JSON
-try:
-    with open(SERVICE_ACCOUNT_PATH, 'r') as f:
-        json.load(f)  # Just test if it's valid JSON
-except Exception as e:
-    raise RuntimeError(f"Invalid service account JSON: {e}")
-
-# Initialize firebase_admin only once with better error handling
-try:
-    firebase_admin.get_app()
-    print(" Firebase already initialized")
-except ValueError:
+def initialize_firebase():
+    """
+    Initialize Firebase with support for both local and Railway environments
+    - Local: Uses firebase-service-account.json file
+    - Railway: Uses base64-encoded credentials from environment variable
+    """
     try:
-        cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
-        firebase_admin.initialize_app(cred, {"databaseURL": DATABASE_URL})
-        print("Firebase initialized successfully")
+        # Check if already initialized
+        try:
+            firebase_admin.get_app()
+            print("✅ Firebase already initialized")
+            return
+        except ValueError:
+            pass  # Not initialized yet, proceed
         
-        # Quick test connection
+        # Get database URL
+        DATABASE_URL = os.environ.get("FIREBASE_DATABASE_URL")
+        if not DATABASE_URL:
+            raise ValueError(
+                "FIREBASE_DATABASE_URL environment variable is required. "
+                "Please set it in your .env file or environment variables. "
+                "It should look like: https://your-project-id-default-rtdb.firebaseio.com/"
+            )
+        
+        # Check if running on Railway (production)
+        if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_STATIC_URL"):
+            print("🚂 Railway environment detected, using base64 credentials...")
+            
+            # Get base64-encoded service account
+            base64_creds = os.getenv("FIREBASE_SERVICE_ACCOUNT_BASE64")
+            if not base64_creds:
+                raise ValueError(
+                    "FIREBASE_SERVICE_ACCOUNT_BASE64 not found in Railway environment. "
+                    "Please add it to your Railway environment variables."
+                )
+            
+            try:
+                # Decode base64 to JSON
+                json_creds = base64.b64decode(base64_creds).decode('utf-8')
+                service_account_info = json.loads(json_creds)
+                
+                # Initialize with decoded credentials
+                cred = credentials.Certificate(service_account_info)
+                print("✅ Firebase credentials decoded from base64")
+            except Exception as e:
+                raise ValueError(f"Failed to decode base64 credentials: {e}")
+        
+        else:
+            # Local development - use JSON file
+            print("💻 Local environment detected, using JSON file...")
+            
+            SERVICE_ACCOUNT_PATH = os.environ.get(
+                "GOOGLE_APPLICATION_CREDENTIALS",
+                "firebase-service-account.json"
+            )
+            
+            if not os.path.exists(SERVICE_ACCOUNT_PATH):
+                raise RuntimeError(
+                    f"Firebase service account file not found: {SERVICE_ACCOUNT_PATH}\n"
+                    f"Please ensure the file exists or set GOOGLE_APPLICATION_CREDENTIALS"
+                )
+            
+            # Validate JSON
+            try:
+                with open(SERVICE_ACCOUNT_PATH, 'r') as f:
+                    json.load(f)  # Test if valid JSON
+            except Exception as e:
+                raise RuntimeError(f"Invalid service account JSON: {e}")
+            
+            # Initialize with file
+            cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
+            print(f"✅ Firebase credentials loaded from {SERVICE_ACCOUNT_PATH}")
+        
+        # Initialize Firebase app
+        firebase_admin.initialize_app(cred, {"databaseURL": DATABASE_URL})
+        print("✅ Firebase initialized successfully")
+        
+        # Test database connection
         ref = db.reference("/")
-        test = ref.get()
-        print("Database connection test passed")
+        ref.get()
+        print("✅ Database connection test passed")
         
     except Exception as e:
-        print(f" Firebase initialization failed: {e}")
+        print(f"❌ Firebase initialization failed: {e}")
         raise
 
+# Initialize Firebase on module import
+initialize_firebase()
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
 
 def _parse_timestamp(ts: Any) -> datetime:
     if isinstance(ts, datetime):
@@ -78,7 +134,6 @@ def _parse_timestamp(ts: Any) -> datetime:
 
 def _sort_entries_by_timestamp(entries: list, newest_first: bool = True) -> list:
     return sorted(entries, key=lambda x: _parse_timestamp(x.get("timestamp")), reverse=newest_first)
-
 
 def create_sensor_data(sensor) -> Dict[str, Any]:
     """
@@ -272,7 +327,7 @@ def get_all_sensors_history(limit: Optional[int] = None, newest_first: bool = Tr
         return {}
 
 
-def get_sensor_history(sensor_id: str, limit: Optional[int] = None, newest_first: bool = True) -> List[Dict[str, Any]] | None:
+def get_sensor_history(sensor_id: str, limit: Optional[int] = None, newest_first: bool = True) -> Optional[List[Dict[str, Any]]]:
     """
     Return full history for a single sensor_id.
     Returns a list of update dicts (possibly empty) or None on error/not found.

@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 from model import Sensor_data
 from firebase_admin import db
 from datetime import datetime
+from services.ml_service import predict_and_alert
 
 router = APIRouter()
 
@@ -62,10 +63,20 @@ async def create_sensorData(sensor_id: str, sensor_data: Sensor_data):
         if isinstance(existing_data, list):
             existing_data.append(new_reading)
         else:
-            # Convert to array if it's not already
             existing_data = [new_reading]
             
         sensor_ref.set(existing_data)
+        
+        # 🆕 AUTO-PREDICTION: Run ML model on new data
+        try:
+            prediction_result = predict_and_alert(new_reading, auto_notify=True)
+            print(f"✅ ML Prediction for {sensor_id}: {prediction_result['prediction'].get('class_label', 'Unknown')}")
+            if prediction_result.get('alert_sent'):
+                print(f"   🚨 Alert sent for {sensor_id}")
+        except Exception as e:
+            print(f"⚠️  ML Prediction failed for {sensor_id}: {e}")
+            # Don't fail the whole request if prediction fails
+        
         return sensor_data
         
     except Exception as e:

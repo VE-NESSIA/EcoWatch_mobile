@@ -1,0 +1,21 @@
+{
+  "model_name": "ecowatch_mining_detector",
+  "version": "1.0",
+  "description": "Binary classifier for detecting illegal mining based on seismic/vibration patterns",
+  "input_features": [
+    "Max_Amplitude",
+    "RMS_Ratio",
+    "Power_Ratio"
+  ],
+  "output_classes": {
+    "0": "Normal ground activity",
+    "1": "Possible illegal mining activity"
+  },
+  "threshold": 0.5,
+  "training_date": "2024-10-18",
+  "performance_metrics": {
+    "accuracy": "Configure based on your model",
+    "precision": "Configure based on your model",
+    "recall": "Configure based on your model"
+  }
+}

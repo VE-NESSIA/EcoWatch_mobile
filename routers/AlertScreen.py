@@ -1,43 +1,107 @@
+# routers/AlertScreen.py
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from services.firebase import get_sensor_data, get_firebase_tokens, send_notification
+from services.firebase import get_sensor_data, get_all_tokens, send_notification, get_firestore_tokens
+from typing import Optional
+import os
 
 router = APIRouter()
 
 class AlertRequest(BaseModel):
     sensor_id: str
-    force: bool = False  # set true to force sending regardless of conditions
+    force: bool = False
 
-@router.post('/notification/alerts')
-async def send_alerts(req: AlertRequest):
-    # fetch latest sensor data
-    sensor_data = get_sensor_data(req.sensor_id)
-    if not sensor_data:
-        raise HTTPException(status_code=404, detail="Sensor not found")
 
-    # determine alert conditions (customize thresholds/logic as needed)
-    battery = sensor_data.get("battery")
-    activity = sensor_data.get("activity")
-    is_triggered = bool(sensor_data.get("isTriggered") or sensor_data.get("is_triggered"))
+@router.get("/notification/tokens/debug", tags=["Notifications"])
+async def debug_tokens():
+    """
+    Debug endpoint to check Firestore tokens (DEVELOPMENT ONLY)
+    
+    ⚠️ WARNING: This endpoint is disabled in production for security
+    """
+    # Check if we're in production
+    if os.getenv("PRODUCTION", "false").lower() == "true":
+        raise HTTPException(
+            status_code=403, 
+            detail="Debug endpoint disabled in production for security reasons"
+        )
+    
+    try:
+        from services.firebase import get_firestore_tokens
+        
+        tokens = get_firestore_tokens()
+        
+        return {
+            "success": True,
+            "tokens_found": len(tokens),
+            # ⚠️ SECURITY: Never expose actual tokens in production!
+            "tokens": ["***HIDDEN***"] * len(tokens),  # Masked tokens
+            "message": f"Found {len(tokens)} FCM token(s) in Firestore 'devices' collection",
+            "note": "Token values hidden for security (local development only)"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-    low_battery = isinstance(battery, (int, float)) and battery < 20
-    activity_detected = bool(activity and str(activity).strip().lower() not in ("idle", "none", ""))
 
-    if not (req.force or is_triggered or low_battery or activity_detected):
-        return {"sent": False, "reason": "No alert conditions met"}
-
-    # build notification payload
-    reason = "Triggered" if is_triggered else "Activity detected" if activity_detected else "Battery low"
-    alert_data = {
-        "title": f"Alert for Sensor {req.sensor_id}",
-        "body": f"{reason} on sensor {req.sensor_id}",
-        "data": {"sensor_id": req.sensor_id, "reason": reason}
-    }
-
-    # get user tokens and send
-    tokens = get_firebase_tokens(req.sensor_id)
-    if not tokens:
-        raise HTTPException(status_code=404, detail="No valid tokens found")
-
-    result = send_notification(tokens, alert_data)
-    return {"sent": True, "result": result}
+@router.post("/notification/alerts", tags=["Notifications"])
+async def send_alert_notification(req: AlertRequest):
+    """
+    Send alert notification for a sensor
+    
+    Gets FCM tokens from Firestore 'devices' collection and sends notification
+    """
+    try:
+        sensor_id = req.sensor_id
+        
+        # Get latest sensor data
+        sensor_data = get_sensor_data(sensor_id)
+        
+        # Handle case where sensor_data might be a list
+        if isinstance(sensor_data, list):
+            # If it's a list, get the first item (latest)
+            sensor_data = sensor_data[0] if sensor_data else None
+        
+        # Check if sensor exists
+        if not sensor_data and not req.force:
+            raise HTTPException(status_code=404, detail=f"Sensor {sensor_id} not found")
+        
+        # Get FCM tokens from Firestore devices collection
+        tokens = get_all_tokens(sensor_id=sensor_id)
+        
+        if not tokens:
+            return {
+                "success": False,
+                "error": "No FCM tokens found in Firestore",
+                "sensor_id": sensor_id,
+                "message": "Check Firestore 'devices' collection for fcmToken fields"
+            }
+        
+        # Prepare notification data
+        alert_data = {
+            "title": f"🚨 Alert - Sensor {sensor_id}",
+            "body": f"Suspicious activity detected at sensor {sensor_id}",
+            "data": {
+                "sensor_id": sensor_id,
+                "type": "manual_alert",
+                "timestamp": sensor_data.get("timestamp") if sensor_data else None
+            }
+        }
+        
+        # Send notification
+        print(f"📤 Sending notification to {len(tokens)} device(s)...")
+        result = send_notification(tokens, alert_data)
+        
+        return {
+            "success": True,
+            "sensor_id": sensor_id,
+            "tokens_found": len(tokens),
+            "notification_result": result,
+            "message": f"Notification sent to {len(tokens)} device(s)"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error sending notification: {str(e)}")

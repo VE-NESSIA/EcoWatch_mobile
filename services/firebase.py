@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import firebase_admin
-from firebase_admin import credentials, db, messaging
+from firebase_admin import credentials, db, messaging, firestore
 
 load_dotenv()
 
@@ -239,6 +239,85 @@ def get_firebase_tokens(sensor_id: str) -> List[str]:
         return tokens
     except Exception:
         return []
+
+def get_firestore_tokens(sensor_id: str = None, user_id: str = None) -> List[str]:
+    """
+    Get FCM tokens from Firestore 'devices' collection
+    
+    Args:
+        sensor_id: Optional sensor ID (not used currently, for future filtering)
+        user_id: Optional user ID (not used currently, for future filtering)
+    
+    Returns:
+        List of FCM tokens from all devices
+    """
+    try:
+        db_firestore = firestore.client()
+        tokens = []
+        
+        # Query the 'devices' collection
+        devices_ref = db_firestore.collection('devices')
+        
+        # Get all device documents
+        docs = devices_ref.stream()
+        
+        # Extract fcmToken from each device
+        for doc in docs:
+            data = doc.to_dict()
+            
+            # Check for fcmToken field
+            if 'fcmToken' in data and data['fcmToken']:
+                tokens.append(data['fcmToken'])
+            # Also check alternative field names (just in case)
+            elif 'fcm_token' in data and data['fcm_token']:
+                tokens.append(data['fcm_token'])
+            elif 'token' in data and data['token']:
+                tokens.append(data['token'])
+        
+        # Deduplicate tokens
+        unique_tokens = list(set(tokens))
+        
+        print(f"📱 Found {len(unique_tokens)} FCM token(s) in Firestore devices collection")
+        
+        return unique_tokens
+        
+    except Exception as e:
+        print(f"❌ Error getting Firestore tokens: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+def get_all_tokens(sensor_id: str = None, user_id: str = None) -> List[str]:
+    """
+    Get FCM tokens from BOTH Realtime Database AND Firestore
+    
+    Args:
+        sensor_id: Optional sensor ID
+        user_id: Optional user ID
+    
+    Returns:
+        Combined deduplicated list of tokens
+    """
+    tokens = []
+    
+    # Get from Realtime Database (if sensor_id provided)
+    if sensor_id:
+        realtime_tokens = get_firebase_tokens(sensor_id)
+        tokens.extend(realtime_tokens)
+        if realtime_tokens:
+            print(f"📊 Found {len(realtime_tokens)} token(s) in Realtime Database")
+    
+    # Get from Firestore 'devices' collection (gets all devices)
+    firestore_tokens = get_firestore_tokens(sensor_id=sensor_id, user_id=user_id)
+    tokens.extend(firestore_tokens)
+    
+    # Deduplicate and return
+    unique_tokens = list(set(tokens))
+    print(f"📤 Total unique tokens: {len(unique_tokens)}")
+    
+    return unique_tokens
+
 
 
 def get_first_update_each_sensor() -> Dict[str, Any]:

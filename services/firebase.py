@@ -342,26 +342,102 @@ def get_first_update_each_sensor() -> Dict[str, Any]:
 
 def send_notification(tokens: List[str], alert_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Wrapper to send multicast notification via FCM.
-    Returns a dict with counts or error.
+    Send multicast notification via FCM with improved error handling.
+    Handles large token lists by batching (max 500 per batch).
+    Returns a dict with detailed results.
     """
     try:
         if not tokens:
-            return {"error": "no tokens provided"}
-        message = messaging.MulticastMessage(
-            tokens=tokens,
-            notification=messaging.Notification(
-                title=alert_data.get("title", "Alert"),
-                body=alert_data.get("body", "New Notification"),
-            ),
-            data=alert_data.get("data", {}),
-        )
-        response = messaging.send_multicast(message)
-        return {"success_count": response.success_count, "failure_count": response.failure_count}
+            return {"error": "no tokens provided", "success_count": 0, "failure_count": 0}
+        
+        # Filter out any empty or invalid tokens
+        valid_tokens = [t for t in tokens if t and isinstance(t, str) and len(t) > 10]
+        
+        if not valid_tokens:
+            return {"error": "no valid tokens provided", "success_count": 0, "failure_count": 0}
+        
+        print(f"📤 Preparing to send to {len(valid_tokens)} valid token(s)")
+        
+        total_success = 0
+        total_failure = 0
+        failed_tokens = []
+        
+        # FCM allows max 500 tokens per multicast, batch if needed
+        BATCH_SIZE = 500
+        
+        for i in range(0, len(valid_tokens), BATCH_SIZE):
+            batch_tokens = valid_tokens[i:i + BATCH_SIZE]
+            
+            try:
+                # Build message
+                message = messaging.MulticastMessage(
+                    tokens=batch_tokens,
+                    notification=messaging.Notification(
+                        title=alert_data.get("title", "Alert"),
+                        body=alert_data.get("body", "New Notification"),
+                    ),
+                    data={k: str(v) for k, v in alert_data.get("data", {}).items()},  # Ensure all data values are strings
+                    android=messaging.AndroidConfig(
+                        priority='high',
+                        notification=messaging.AndroidNotification(
+                            sound='default',
+                            channel_id='alerts'
+                        )
+                    ),
+                    apns=messaging.APNSConfig(
+                        payload=messaging.APNSPayload(
+                            aps=messaging.Aps(
+                                sound='default',
+                                badge=1
+                            )
+                        )
+                    )
+                )
+                
+                # Send multicast
+                response = messaging.send_multicast(message)
+                
+                total_success += response.success_count
+                total_failure += response.failure_count
+                
+                # Log individual failures for debugging
+                if response.failure_count > 0:
+                    for idx, resp in enumerate(response.responses):
+                        if not resp.success:
+                            token = batch_tokens[idx]
+                            error_msg = str(resp.exception) if resp.exception else "Unknown error"
+                            failed_tokens.append({"token": token[:20] + "...", "error": error_msg})
+                            print(f"   ❌ Failed to send to token {idx + 1}: {error_msg}")
+                
+                print(f"   ✅ Batch {i//BATCH_SIZE + 1}: {response.success_count} success, {response.failure_count} failed")
+                
+            except Exception as batch_error:
+                print(f"   ❌ Batch {i//BATCH_SIZE + 1} failed: {str(batch_error)}")
+                total_failure += len(batch_tokens)
+                failed_tokens.append({"batch": i//BATCH_SIZE + 1, "error": str(batch_error)})
+        
+        result = {
+            "success_count": total_success,
+            "failure_count": total_failure,
+            "total_tokens": len(valid_tokens)
+        }
+        
+        if failed_tokens:
+            result["failed_tokens"] = failed_tokens[:5]  # Only return first 5 to avoid huge responses
+        
+        return result
+        
     except Exception as e:
-        return {"error": str(e)}
-
-
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"❌ send_notification error: {error_detail}")
+        return {
+            "error": str(e),
+            "success_count": 0,
+            "failure_count": len(tokens) if tokens else 0,
+            "details": error_detail
+        }
+        
 def _normalize_updates_node(updates: Any) -> List[Dict[str, Any]]:
     """
     Normalize a Firebase node into a list of update dicts.

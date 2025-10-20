@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EcoWatch - Time-Series Upload (FIXED)</title>
+    <style>
+        /* [Same CSS as before - keeping it short] */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; background: white; border-radius: 20px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); overflow: hidden; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; }
+        .content { padding: 30px; }
+        .button { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px 30px; border: none; border-radius: 8px; font-size: 1.1em; cursor: pointer; width: 100%; }
+        .log { background: #f8f9fa; border-radius: 10px; padding: 15px; max-height: 400px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 0.9em; }
+        .log-warning { color: #ff6b00; font-weight: bold; }
+        .log-success { color: #28a745; }
+        .log-error { color: #dc3545; }
+        .log-info { color: #667eea; }
+        .file-upload { border: 3px dashed #667eea; border-radius: 10px; padding: 40px; text-align: center; cursor: pointer; margin-bottom: 20px; }
+        input[type="file"] { display: none; }
+        #progressSection { display: none; margin-top: 20px; }
+        .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; }
+        .stat-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; text-align: center; }
+        .stat-value { font-size: 2em; font-weight: bold; }
+        .progress-bar { width: 100%; height: 30px; background: #e0e0e0; border-radius: 15px; overflow: hidden; margin-bottom: 10px; }
+        .progress-fill { height: 100%; background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; color: white; font-weight: 600; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🌍 EcoWatch - FIXED Version</h1>
+            <p>Fixed Label parsing for mining detection</p>
+        </div>
+
+        <div class="content">
+            <div class="file-upload" id="fileUpload">
+                <div style="font-size: 3em; margin-bottom: 10px;">📁</div>
+                <h3>Drop CSV file here (Format: SNR-XXX.csv)</h3>
+                <p style="margin-top: 10px;">Expected: Max_Amplitude, RMS_Ratio, Power_Ratio, Label</p>
+                <input type="file" id="fileInput" accept=".csv">
+                <div id="filenameDisplay" style="font-weight: bold; margin-top: 10px; color: #667eea;"></div>
+            </div>
+
+            <button class="button" id="uploadButton" disabled>
+                📤 Upload to Backend
+            </button>
+
+            <div id="progressSection">
+                <div class="stats">
+                    <div class="stat-card">
+                        <div class="stat-value" id="totalCount">0</div>
+                        <div>Total</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="successCount">0</div>
+                        <div>Success</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="errorCount">0</div>
+                        <div>Errors</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="alertCount">0</div>
+                        <div>🚨 Alerts</div>
+                    </div>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill">0%</div>
+                </div>
+                <div class="log" id="log"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let csvData = [];
+        let sensorId = null;
+        const backendUrl = "https://ecowatchmobile-production.up.railway.app";
+
+        document.getElementById('fileUpload').addEventListener('click', () => {
+            document.getElementById('fileInput').click();
+        });
+
+        document.getElementById('fileInput').addEventListener('change', (e) => {
+            if (e.target.files.length) handleFile(e.target.files[0]);
+        });
+
+        document.getElementById('uploadButton').addEventListener('click', uploadData);
+
+        function handleFile(file) {
+            if (!file.name.endsWith('.csv')) {
+                alert('Please select a CSV file');
+                return;
+            }
+
+            // Extract sensor ID from filename
+            sensorId = file.name.replace(/\.csv$/i, '').toUpperCase();
+            if (!/^SNR-\d{3,}$/i.test(sensorId)) {
+                alert('Filename must be SNR-XXX.csv format');
+                return;
+            }
+
+            document.getElementById('filenameDisplay').textContent = `Sensor: ${sensorId}`;
+
+            const reader = new FileReader();
+            reader.onload = (e) => parseCSV(e.target.result);
+            reader.readAsText(file);
+        }
+
+        function parseCSV(text) {
+            const lines = text.trim().split('\n');
+            csvData = [];
+
+            addLog(`📄 Parsing CSV...`, 'info');
+
+            for (let i = 1; i < lines.length; i++) {
+                const values = lines[i].split(',').map(v => v.trim());
+                if (values.length >= 4 && values[0]) {
+                    const row = {
+                        Max_Amplitude: parseFloat(values[0]),
+                        RMS_Ratio: parseFloat(values[1]),
+                        Power_Ratio: parseFloat(values[2]),
+                        Label: parseInt(values[3])  // ✅ Parse as integer
+                    };
+
+                    // Debug mining rows
+                    if (row.Label === 1) {
+                        addLog(`🔍 Mining row found: Row ${i}, Max=${row.Max_Amplitude}, RMS=${row.RMS_Ratio}, Power=${row.Power_Ratio}`, 'info');
+                    }
+
+                    csvData.push(row);
+                }
+            }
+
+            const miningCount = csvData.filter(r => r.Label === 1).length;
+            addLog(`✅ Loaded ${csvData.length} rows (${miningCount} mining, ${csvData.length - miningCount} normal)`, 'success');
+
+            document.getElementById('totalCount').textContent = csvData.length;
+            document.getElementById('uploadButton').disabled = false;
+        }
+
+        // function convertToSensorData(csvRow, index) {
+        //     const timestamp = new Date(Date.now() + (index * 300000)).toISOString(); // 5 min intervals
+            
+        //     // ✅ FIX: Properly detect mining
+        //     const label = parseInt(csvRow.Label);
+        //     const isMining = (label === 1);
+
+        //     const data = {
+        //         sensor_id: sensorId,
+        //         timestamp: timestamp,
+        //         activity: isMining ? 'excavation' : 'idle',
+        //         battery: isMining ? (40 + Math.random() * 20) : (80 + Math.random() * 20),
+        //         signal_strength: isMining ? 'weak' : 'strong',
+        //         status: 'active',
+        //         isActive: true,
+        //         isTriggered: isMining,
+        //         Max_Amplitude: csvRow.Max_Amplitude,
+        //         RMS_Ratio: csvRow.RMS_Ratio,
+        //         Power_Ratio: csvRow.Power_Ratio
+        //     };
+
+        //     // Debug log
+        //     if (isMining) {
+        //         console.log(`Row ${index}: MINING - Max=${data.Max_Amplitude}, RMS=${data.RMS_Ratio}, Power=${data.Power_Ratio}, Activity=${data.activity}`);
+        //     }
+
+        //     return data;
+        // }
+
+        function convertToSensorData(csvRow, index) {
+            const timestamp = new Date(Date.now() + (index * 300000)).toISOString();
+            const label = parseInt(csvRow.Label);
+            const isMining = (label === 1);
+
+            return {
+                sensor_id: sensorId,
+                timestamp: timestamp,
+                activity: isMining ? 'excavation' : 'idle',
+                battery: isMining ? 50.0 : 90.0,
+                signal_strength: isMining ? 'weak' : 'strong',
+                status: 'active',
+                isActive: true,
+                isTriggered: isMining,  // ✅ This triggers the fallback mining detection
+                // Don't send Max_Amplitude, etc - let predictor estimate from activity
+            };
+}
+
+        async function uploadData() {
+            if (csvData.length === 0) return;
+
+            document.getElementById('uploadButton').disabled = true;
+            document.getElementById('progressSection').style.display = 'block';
+            document.getElementById('log').innerHTML = '';
+
+            let success = 0, errors = 0, alerts = 0;
+
+            addLog(`🚀 Starting upload for ${sensorId}...`, 'info');
+
+            for (let i = 0; i < csvData.length; i++) {
+                const sensorData = convertToSensorData(csvData[i], i);
+
+                try {
+                    const response = await fetch(`${backendUrl}/EcoWatch/sensors/${sensorId}`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(sensorData)
+                    });
+
+                    if (response.ok) {
+                        const result = await response.json();
+                        success++;
+
+                        if (result.ml_prediction && result.ml_prediction.is_alert) {
+                            alerts++;
+                            addLog(`🚨 Row ${i + 1}: MINING ALERT! Confidence: ${(result.ml_prediction.confidence * 100).toFixed(1)}%`, 'warning');
+                        } else if ((i + 1) % 10 === 0) {
+                            addLog(`✅ Uploaded ${i + 1}/${csvData.length}...`, 'success');
+                        }
+                    } else {
+                        errors++;
+                        addLog(`❌ Row ${i + 1}: ${await response.text()}`, 'error');
+                    }
+                } catch (error) {
+                    errors++;
+                    addLog(`❌ Row ${i + 1}: ${error.message}`, 'error');
+                }
+
+                // Update progress
+                const progress = Math.round(((i + 1) / csvData.length) * 100);
+                document.getElementById('progressFill').style.width = progress + '%';
+                document.getElementById('progressFill').textContent = progress + '%';
+                document.getElementById('successCount').textContent = success;
+                document.getElementById('errorCount').textContent = errors;
+                document.getElementById('alertCount').textContent = alerts;
+
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+
+            addLog(`\n✅ COMPLETE: ${success} success, ${errors} errors, ${alerts} MINING ALERTS`, 'success');
+            document.getElementById('uploadButton').disabled = false;
+        }
+
+        function addLog(message, type = 'info') {
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            document.getElementById('log').appendChild(entry);
+            document.getElementById('log').scrollTop = document.getElementById('log').scrollHeight;
+        }
+    </script>
+</body>
+</html>

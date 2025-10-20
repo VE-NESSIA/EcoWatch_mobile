@@ -77,6 +77,14 @@ class MiningActivityPredictor:
         """
         import pandas as pd
         
+        # 🔍 DEBUG: Print what we received
+        print(f"\n🔍 DEBUG: Received sensor_data type: {type(sensor_data)}")
+        print(f"🔍 DEBUG: sensor_data keys: {sensor_data.keys() if isinstance(sensor_data, dict) else 'NOT A DICT'}")
+        print(f"🔍 DEBUG: Full sensor_data: {sensor_data}")
+        print(f"🔍 DEBUG: Has Max_Amplitude? {'Max_Amplitude' in sensor_data}")
+        print(f"🔍 DEBUG: Has RMS_Ratio? {'RMS_Ratio' in sensor_data}")
+        print(f"🔍 DEBUG: Has Power_Ratio? {'Power_Ratio' in sensor_data}")
+        
         if "Max_Amplitude" in sensor_data and "RMS_Ratio" in sensor_data and "Power_Ratio" in sensor_data:
             features = {
                 "Max_Amplitude": float(sensor_data.get("Max_Amplitude", 0.0)),

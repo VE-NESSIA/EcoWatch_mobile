@@ -3,9 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EcoWatch - Time-Series Upload (FIXED)</title>
+    <title>EcoWatch - Fixed CSV Upload with Features</title>
     <style>
-        /* [Same CSS as before - keeping it short] */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
         .container { max-width: 1000px; margin: 0 auto; background: white; border-radius: 20px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); overflow: hidden; }
@@ -30,8 +29,8 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🌍 EcoWatch - FIXED Version</h1>
-            <p>Fixed Label parsing for mining detection</p>
+            <h1>🌍 EcoWatch - Fixed Upload</h1>
+            <p>✅ Now sends Max_Amplitude, RMS_Ratio, Power_Ratio</p>
         </div>
 
         <div class="content">
@@ -44,7 +43,7 @@
             </div>
 
             <button class="button" id="uploadButton" disabled>
-                📤 Upload to Backend
+                📤 Upload to Backend (Auto-Notifications Enabled)
             </button>
 
             <div id="progressSection">
@@ -95,7 +94,6 @@
                 return;
             }
 
-            // Extract sensor ID from filename
             sensorId = file.name.replace(/\.csv$/i, '').toUpperCase();
             if (!/^SNR-\d{3,}$/i.test(sensorId)) {
                 alert('Filename must be SNR-XXX.csv format');
@@ -122,12 +120,11 @@
                         Max_Amplitude: parseFloat(values[0]),
                         RMS_Ratio: parseFloat(values[1]),
                         Power_Ratio: parseFloat(values[2]),
-                        Label: parseInt(values[3])  // ✅ Parse as integer
+                        Label: parseInt(values[3])
                     };
 
-                    // Debug mining rows
                     if (row.Label === 1) {
-                        addLog(`🔍 Mining row found: Row ${i}, Max=${row.Max_Amplitude}, RMS=${row.RMS_Ratio}, Power=${row.Power_Ratio}`, 'info');
+                        addLog(`🔍 Mining row: ${i}, Max=${row.Max_Amplitude.toFixed(2)}, RMS=${row.RMS_Ratio.toFixed(2)}, Power=${row.Power_Ratio.toFixed(2)}`, 'info');
                     }
 
                     csvData.push(row);
@@ -140,35 +137,6 @@
             document.getElementById('totalCount').textContent = csvData.length;
             document.getElementById('uploadButton').disabled = false;
         }
-
-        // function convertToSensorData(csvRow, index) {
-        //     const timestamp = new Date(Date.now() + (index * 300000)).toISOString(); // 5 min intervals
-            
-        //     // ✅ FIX: Properly detect mining
-        //     const label = parseInt(csvRow.Label);
-        //     const isMining = (label === 1);
-
-        //     const data = {
-        //         sensor_id: sensorId,
-        //         timestamp: timestamp,
-        //         activity: isMining ? 'excavation' : 'idle',
-        //         battery: isMining ? (40 + Math.random() * 20) : (80 + Math.random() * 20),
-        //         signal_strength: isMining ? 'weak' : 'strong',
-        //         status: 'active',
-        //         isActive: true,
-        //         isTriggered: isMining,
-        //         Max_Amplitude: csvRow.Max_Amplitude,
-        //         RMS_Ratio: csvRow.RMS_Ratio,
-        //         Power_Ratio: csvRow.Power_Ratio
-        //     };
-
-        //     // Debug log
-        //     if (isMining) {
-        //         console.log(`Row ${index}: MINING - Max=${data.Max_Amplitude}, RMS=${data.RMS_Ratio}, Power=${data.Power_Ratio}, Activity=${data.activity}`);
-        //     }
-
-        //     return data;
-        // }
 
         function convertToSensorData(csvRow, index) {
             const timestamp = new Date(Date.now() + (index * 300000)).toISOString();
@@ -183,21 +151,26 @@
                 signal_strength: isMining ? 'weak' : 'strong',
                 status: 'active',
                 isActive: true,
-                isTriggered: isMining,  // ✅ This triggers the fallback mining detection
-                // Don't send Max_Amplitude, etc - let predictor estimate from activity
+                isTriggered: isMining,
+                // ✅ CRITICAL: Send actual CSV feature values
+                Max_Amplitude: parseFloat(csvRow.Max_Amplitude),
+                RMS_Ratio: parseFloat(csvRow.RMS_Ratio),
+                Power_Ratio: parseFloat(csvRow.Power_Ratio),
+                Label: label  // Also send label for reference
             };
-}
+        }
 
         async function uploadData() {
             if (csvData.length === 0) return;
-
+            
             document.getElementById('uploadButton').disabled = true;
             document.getElementById('progressSection').style.display = 'block';
             document.getElementById('log').innerHTML = '';
 
-            let success = 0, errors = 0, alerts = 0;
+            let success = 0, errors = 0, alerts = 0, notificationsSent = 0;
 
             addLog(`🚀 Starting upload for ${sensorId}...`, 'info');
+            addLog(`📲 Auto-notifications ENABLED - devices will be notified on mining detection`, 'info');
 
             for (let i = 0; i < csvData.length; i++) {
                 const sensorData = convertToSensorData(csvData[i], i);
@@ -212,10 +185,32 @@
                     if (response.ok) {
                         const result = await response.json();
                         success++;
-
-                        if (result.ml_prediction && result.ml_prediction.is_alert) {
+                        
+                        // Check for mining alert
+                        let isMiningAlert = false;
+                        let confidence = 0;
+                        
+                        if (result.ml_prediction) {
+                            isMiningAlert = result.ml_prediction.is_alert || result.ml_prediction.prediction === 1;
+                            confidence = result.ml_prediction.confidence || 0;
+                        }
+                        
+                        // Check if notification was sent
+                        if (result.auto_notification) {
+                            const notifSent = result.auto_notification.notification_sent;
+                            const tokensCount = result.auto_notification.tokens_count || 0;
+                            
+                            if (notifSent) {
+                                notificationsSent++;
+                                alerts++;
+                                addLog(`🚨 Row ${i + 1}: ALERT + Notification sent to ${tokensCount} device(s)! Confidence: ${(confidence * 100).toFixed(1)}%`, 'warning');
+                            } else {
+                                alerts++;
+                                addLog(`⚠️ Row ${i + 1}: ALERT detected but no devices to notify`, 'warning');
+                            }
+                        } else if (isMiningAlert) {
                             alerts++;
-                            addLog(`🚨 Row ${i + 1}: MINING ALERT! Confidence: ${(result.ml_prediction.confidence * 100).toFixed(1)}%`, 'warning');
+                            addLog(`🚨 Row ${i + 1}: Mining detected (no auto-notification in response)`, 'warning');
                         } else if ((i + 1) % 10 === 0) {
                             addLog(`✅ Uploaded ${i + 1}/${csvData.length}...`, 'success');
                         }
@@ -239,7 +234,9 @@
                 await new Promise(resolve => setTimeout(resolve, 500));
             }
 
-            addLog(`\n✅ COMPLETE: ${success} success, ${errors} errors, ${alerts} MINING ALERTS`, 'success');
+            addLog(`\n✅ COMPLETE: ${success} success, ${errors} errors`, 'success');
+            addLog(`🚨 ${alerts} mining alerts detected`, 'warning');
+            addLog(`📲 ${notificationsSent} push notifications sent to devices`, 'info');
             document.getElementById('uploadButton').disabled = false;
         }
 

@@ -1,10 +1,11 @@
-# HomeScreen.py
+# routers/HomeScreen.py - COMPLETE WITH AUTO-NOTIFICATIONS
 from fastapi import APIRouter, HTTPException
 from typing import Any, Dict, List, Optional
 from model import Sensor_data
-from firebase_admin import db
+from firebase_admin import db, firestore
 from datetime import datetime
 from services.ml_service import predict_and_alert
+from services.firebase import get_all_tokens, send_notification
 
 router = APIRouter()
 
@@ -38,6 +39,87 @@ def _last_update_from_updates_node(updates: Any) -> Optional[Dict[str, Any]]:
         return updates
     return None
 
+async def send_alert_if_mining_detected(sensor_id: str, sensor_data: Dict[str, Any], prediction_result: Dict[str, Any]):
+    """
+    Automatically send notification if mining is detected
+    """
+    try:
+        # Extract prediction info
+        prediction = prediction_result.get('prediction', {})
+        is_alert = prediction.get('is_alert', False) or prediction.get('prediction') == 1
+        confidence = prediction.get('confidence', 0)
+        
+        if not is_alert:
+            return None  # Not an alert, skip
+        
+        print(f"🚨 ALERT DETECTED: Attempting to send notification for {sensor_id}")
+        
+        # Get FCM tokens
+        tokens = get_all_tokens(sensor_id=sensor_id)
+        
+        if not tokens:
+            print(f"⚠️ No FCM tokens found for {sensor_id}")
+            return {
+                "notification_sent": False,
+                "reason": "no_tokens",
+                "message": "No devices registered for notifications"
+            }
+        
+        # Prepare notification
+        alert_data = {
+            "title": f"🚨 Mining Alert - {sensor_id}",
+            "body": f"Possible illegal mining detected! Confidence: {confidence*100:.1f}%",
+            "data": {
+                "sensor_id": sensor_id,
+                "type": "auto_alert",
+                "confidence": str(confidence),
+                "timestamp": sensor_data.get("timestamp"),
+                "activity": sensor_data.get("activity")
+            }
+        }
+        
+        # Send notification
+        result = send_notification(tokens, alert_data)
+        print(f"✅ Notification sent to {len(tokens)} device(s)")
+        
+        # Log to Firestore
+        try:
+            firestore_db = firestore.client()
+            alert_record = {
+                "sensor_id": sensor_id,
+                "title": alert_data["title"],
+                "body": alert_data["body"],
+                "type": "auto_alert",
+                "timestamp": firestore.SERVER_TIMESTAMP,
+                "confidence": confidence,
+                "prediction": prediction.get('prediction', 0),
+                "tokens_sent": len(tokens),
+                "notification_result": result,
+                "sensor_data": sensor_data,
+                "ml_prediction": prediction_result
+            }
+            
+            firestore_db.collection('alerts').add(alert_record)
+            print(f"📝 Alert logged to Firestore 'alerts' collection")
+            
+        except Exception as log_error:
+            print(f"⚠️ Failed to log alert to Firestore: {str(log_error)}")
+        
+        return {
+            "notification_sent": True,
+            "tokens_count": len(tokens),
+            "notification_result": result
+        }
+        
+    except Exception as e:
+        print(f"❌ Error sending auto-notification: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "notification_sent": False,
+            "error": str(e)
+        }
+
 #sensor_id in URL path instead of JSON body
 @router.post("/EcoWatch/sensors/{sensor_id}", response_model=Sensor_data)
 async def create_sensorData(sensor_id: str, sensor_data: Sensor_data):
@@ -48,7 +130,7 @@ async def create_sensorData(sensor_id: str, sensor_data: Sensor_data):
         # Get existing data
         existing_data = sensor_ref.get() or []
         
-        # Add new reading to array
+        # Build new reading with ALL fields including CSV features
         new_reading = {
             "sensor_id": sensor_id,
             "timestamp": sensor_data.timestamp.isoformat(),
@@ -60,6 +142,26 @@ async def create_sensorData(sensor_id: str, sensor_data: Sensor_data):
             "isTriggered": sensor_data.isTriggered
         }
         
+        # ✅ CRITICAL: Add CSV feature values if present
+        if sensor_data.Max_Amplitude is not None:
+            new_reading["Max_Amplitude"] = sensor_data.Max_Amplitude
+        if sensor_data.RMS_Ratio is not None:
+            new_reading["RMS_Ratio"] = sensor_data.RMS_Ratio
+        if sensor_data.Power_Ratio is not None:
+            new_reading["Power_Ratio"] = sensor_data.Power_Ratio
+        
+        # Debug logging
+        has_features = all([
+            sensor_data.Max_Amplitude is not None,
+            sensor_data.RMS_Ratio is not None,
+            sensor_data.Power_Ratio is not None
+        ])
+        
+        if has_features:
+            print(f"✅ Received CSV features: Max={sensor_data.Max_Amplitude:.6f}, RMS={sensor_data.RMS_Ratio:.2f}, Power={sensor_data.Power_Ratio:.2f}")
+        else:
+            print(f"⚠️ Missing CSV features - ML prediction may be inaccurate")
+        
         if isinstance(existing_data, list):
             existing_data.append(new_reading)
         else:
@@ -67,19 +169,48 @@ async def create_sensorData(sensor_id: str, sensor_data: Sensor_data):
             
         sensor_ref.set(existing_data)
         
-        # 🆕 AUTO-PREDICTION: Run ML model on new data
+        # 🆕 AUTO-PREDICTION & AUTO-NOTIFICATION
+        prediction_result = None
+        notification_result = None
+        
         try:
-            prediction_result = predict_and_alert(new_reading, auto_notify=True)
-            print(f"✅ ML Prediction for {sensor_id}: {prediction_result['prediction'].get('class_label', 'Unknown')}")
-            if prediction_result.get('alert_sent'):
-                print(f"   🚨 Alert sent for {sensor_id}")
+            # Run ML prediction (don't let it send notification, we handle it ourselves)
+            prediction_result = predict_and_alert(new_reading, auto_notify=False)
+            
+            prediction_class = prediction_result.get('prediction', {}).get('class_label', 'Unknown')
+            print(f"✅ ML Prediction for {sensor_id}: {prediction_class}")
+            
+            # 🚨 AUTO-SEND NOTIFICATION IF MINING DETECTED
+            notification_result = await send_alert_if_mining_detected(
+                sensor_id,
+                new_reading,
+                prediction_result
+            )
+            
+            if notification_result and notification_result.get('notification_sent'):
+                token_count = notification_result.get('tokens_count', 0)
+                print(f"   🚨 Auto-notification sent to {token_count} device(s)")
+            elif notification_result and not notification_result.get('notification_sent'):
+                reason = notification_result.get('reason', 'unknown')
+                print(f"   ⚠️ Notification not sent: {reason}")
+            
         except Exception as e:
-            print(f"⚠️  ML Prediction failed for {sensor_id}: {e}")
+            print(f"⚠️ ML Prediction/Notification failed for {sensor_id}: {e}")
+            import traceback
+            traceback.print_exc()
             # Don't fail the whole request if prediction fails
+        
+        # Log results for debugging (since we can't modify response model)
+        if prediction_result:
+            print(f"📊 Full prediction result: {prediction_result}")
+        if notification_result:
+            print(f"📲 Notification result: {notification_result}")
         
         return sensor_data
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 #Add endpoint to get specific sensor data
